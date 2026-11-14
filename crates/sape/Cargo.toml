@@ -1,0 +1,13 @@
+[package]
+name = "sape"
+description = "San Andreas Performance Engine - 32-bit ASI/DLL for GTA San Andreas and SA-MP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sape-core = { path = "../sape-core" }

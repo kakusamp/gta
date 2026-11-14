@@ -1,0 +1,10 @@
+# GTA San Andreas is a 32-bit process: the DLL MUST be built for an i686 target.
+#   Windows (recommended): cargo build -p sape --release --target i686-pc-windows-msvc
+#   Linux cross-compile:   cargo build -p sape --release --target i686-pc-windows-gnu
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"
+# stdcall-fixup: mingw's DLL CRT references the undecorated DllMain symbol.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-Wl,--enable-stdcall-fixup"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

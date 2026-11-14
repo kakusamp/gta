@@ -1,0 +1,10 @@
+[package]
+name = "sape-analyze"
+description = "Offline frame-time CSV analyzer for SAPE benchmark captures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sape-core = { path = "../../crates/sape-core" }

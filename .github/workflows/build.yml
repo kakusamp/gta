@@ -1,0 +1,36 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add i686-pc-windows-msvc
+      - run: cargo test -p sape-core -p sape-analyze
+      - run: cargo clippy -p sape --release --target i686-pc-windows-msvc -- -D warnings
+      - run: cargo build -p sape --release --target i686-pc-windows-msvc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sape-i686-msvc
+          path: |
+            target/i686-pc-windows-msvc/release/sape.dll
+            target/i686-pc-windows-msvc/release/sape.pdb
+            sape.ini
+
+  linux-cross-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw, Wine (32-bit) and Xvfb
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 xvfb \
+            wine wine32:i386 libgl1:i386 libgl1-mesa-dri:i386 libglx-mesa0:i386
+      - run: rustup target add i686-pc-windows-gnu
+      - run: cargo test -p sape-core -p sape-analyze
+      - run: tools/smoke-test/run.sh
