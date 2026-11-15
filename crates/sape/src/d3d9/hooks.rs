@@ -184,6 +184,7 @@ pub unsafe extern "system" fn hk_end_state_block(
     out: *mut *mut c_void,
 ) -> HRESULT {
     let hr = orig!(ORIG_END_SB as EndStateBlockFn)(dev, out);
+    bump(&C.state_blocks_created, 1);
     ro::RECORDING.store(false, Release);
     if hr >= 0 && !out.is_null() {
         hook_state_block(*out);
@@ -197,6 +198,7 @@ pub unsafe extern "system" fn hk_create_state_block(
     out: *mut *mut c_void,
 ) -> HRESULT {
     let hr = orig!(ORIG_CREATE_SB as CreateStateBlockFn)(dev, ty, out);
+    bump(&C.state_blocks_created, 1);
     if hr >= 0 && !out.is_null() {
         hook_state_block(*out);
     }
@@ -231,7 +233,12 @@ unsafe fn hook_state_block(sb: *mut c_void) {
 }
 
 unsafe extern "system" fn hk_state_block_apply(this: *mut c_void) -> HRESULT {
+    let t = Instant::now();
     let hr = orig!(ORIG_SB_APPLY as StateBlockApplyFn)(this);
+    bump(
+        &C.state_block_apply_ns,
+        t.elapsed().as_nanos().min(u32::MAX as u128) as u32,
+    );
     bump(&C.state_block_applies, 1);
     ro::invalidate_any_thread();
     hr

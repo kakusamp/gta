@@ -34,6 +34,9 @@ pub struct FrameCounters {
     pub buffers_created: AtomicU32,
     pub buffer_bytes_created: AtomicU32,
     pub state_block_applies: AtomicU32,
+    /// Time spent inside IDirect3DStateBlock9::Apply (ns).
+    pub state_block_apply_ns: AtomicU32,
+    pub state_blocks_created: AtomicU32,
     pub resets: AtomicU32,
 }
 
@@ -47,6 +50,15 @@ fn take(c: &AtomicU32) -> u32 {
     c.swap(0, Relaxed)
 }
 
+/// Set by the watchdog after re-hooking: the next Present-to-Present interval
+/// spans a period in which SAPE could not see frames, so it is not a real
+/// frame time and must not be recorded (it would show up as a false spike).
+static DISCARD_NEXT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn discard_next_interval() {
+    DISCARD_NEXT.store(true, Release);
+}
+
 pub static C: FrameCounters = FrameCounters {
     draw_calls: AtomicU32::new(0),
     draw_up_calls: AtomicU32::new(0),
@@ -58,6 +70,8 @@ pub static C: FrameCounters = FrameCounters {
     buffers_created: AtomicU32::new(0),
     buffer_bytes_created: AtomicU32::new(0),
     state_block_applies: AtomicU32::new(0),
+    state_block_apply_ns: AtomicU32::new(0),
+    state_blocks_created: AtomicU32::new(0),
     resets: AtomicU32::new(0),
 };
 
@@ -73,6 +87,8 @@ struct FrameSample {
     buf_created: u32,
     buf_bytes: u32,
     sb_applies: u32,
+    sb_apply_ns: u32,
+    sb_created: u32,
     rs: FilterCounters,
     samp: FilterCounters,
     tss: FilterCounters,
@@ -93,6 +109,8 @@ impl FrameSample {
             buf_created: take(&C.buffers_created),
             buf_bytes: take(&C.buffer_bytes_created),
             sb_applies: take(&C.state_block_applies),
+            sb_apply_ns: take(&C.state_block_apply_ns),
+            sb_created: take(&C.state_blocks_created),
             rs,
             samp,
             tss,
@@ -103,7 +121,7 @@ impl FrameSample {
 
 #[derive(Default)]
 struct Totals {
-    s: [u64; 18],
+    s: [u64; 20],
 }
 
 impl Totals {
@@ -127,6 +145,8 @@ impl Totals {
             f.samp.skipped + f.tss.skipped,
             f.tex.calls,
             f.tex.redundant,
+            f.sb_apply_ns,
+            f.sb_created,
         ];
         for (a, b) in self.s.iter_mut().zip(v) {
             *a += b as u64;
@@ -194,6 +214,15 @@ pub unsafe fn on_present(dev: *mut Device, cfg: &Config) {
     });
 
     let sample = FrameSample::collect();
+    if DISCARD_NEXT.swap(false, AcqRel) && st.last.is_some() {
+        crate::log_info!(
+            "frame interval of {:.1} ms discarded (SAPE's hooks were missing during it)",
+            st.last
+                .map(|l| (now - l).as_secs_f64() * 1000.0)
+                .unwrap_or(0.0)
+        );
+        st.last = None;
+    }
     if let Some(last) = st.last {
         let ms = (now - last).as_secs_f64() as f32 * 1000.0;
         st.frame += 1;
@@ -418,9 +447,9 @@ unsafe fn flush_window(st: &mut State, dev: *mut Device, now: Instant) {
     if st.full || t[10] > 0 {
         let _ = write!(
             line,
-            "\n    per frame: draws {:.0} (UP {:.0}) prims {:.0} streams {:.0} shaders {:.0} vfmt {:.0} | RS {:.0} redundant {:.1}% skipped {:.0} | samp+tss {:.0} redundant {:.1}% skipped {:.0} | SetTexture {:.0} redundant {:.1}% | sb_apply {:.1}",
+            "\n    per frame: draws {:.0} (UP {:.0}) prims {:.0} streams {:.0} shaders {:.0} vfmt {:.0} | RS {:.0} redundant {:.1}% skipped {:.0} | samp+tss {:.0} redundant {:.1}% skipped {:.0} | SetTexture {:.0} redundant {:.1}% | StateBlock Apply {:.1} ({:.1} us) created {:.2}",
             per(0) + per(1), per(1), per(2), per(3), per(4), per(5), per(10), pct(t[11], t[10]), per(12),
-            per(13), pct(t[14], t[13]), per(15), per(16), pct(t[17], t[16]), per(9),
+            per(13), pct(t[14], t[13]), per(15), per(16), pct(t[17], t[16]), per(9), per(18) / 1000.0, per(19),
         );
         let _ = write!(
             line,

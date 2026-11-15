@@ -81,7 +81,12 @@ would change device state is ever skipped.
 ## Benchmark results
 
 * Wine micro-benchmark: see `BENCHMARKING.md` (~17 ns saved per redundant call).
-* **In-game: not yet measured.** Required before any default change:
+* **In-game (first session, SA-MP + modpack, see BENCHMARKING.md): 0.0 %
+  redundant render/sampler/texture-stage state calls** at ~284 render-state
+  calls per frame. Expected benefit in that setup: negligible (< 0.01 ms per
+  frame). Verdict so far: **keep off by default**; it stays available for
+  setups where level-2 statistics show real redundancy.
+* Still required before any default change:
   1. Level-2 redundancy statistics in scenes S1, S3, S5.
   2. A/B captures (`ab_interval_s=10`) in S1, S3 and S5, 3 sessions each, on
      the Microsoft runtime and on DXVK.

@@ -105,5 +105,33 @@ Reading:
   issues many thousands of redundant state calls per frame**, which is exactly
   what the in-game level-2 measurements must establish first.
 
-**No in-game benchmark results exist yet.** They require Windows with GTA SA
-1.0 US, which is not available in the development environment.
+## First in-game measurement (SAPE 0.1.2, monitor level 2, filter off)
+
+Setup: GTA SA 1.0 US + SA-MP 0.3.7-R1, user modpack ("FPS UP"), Windows,
+12 logical CPUs, 1920×1080 fullscreen, pure HW device, `d3d9.dll` proxy mode.
+One session, ~30 s, in a SA-MP server. Single session: indicative only.
+
+| Window | avg FPS | avg ms | 1% low | draws/frame | prims/frame | RS calls/frame | RS redundant | StateBlock::Apply/frame | CPU |
+|---|---|---|---|---|---|---|---|---|---|
+| 17.4–22.4 s (in game) | 452 | 2.21 | 272 | 447 | 66,656 | 284 | **0.0 %** | 41.4 | 1.49 cores |
+| 12.4–17.4 s (spawning) | 308 | 3.25 | (gap artifacts) | 906 | 138,972 | 493 | **0.0 %** | 47.1 | 1.59 cores |
+
+Findings:
+
+* **[V] Redundant-state rate at the D3D9 boundary is 0.0 %** (render, sampler and
+  texture-stage states, and SetTexture) in this configuration. Combined with
+  ~284 render-state calls per frame, optimization 0001 can save at most a few
+  microseconds per frame here. This confirms the RenderWare state-cache
+  hypothesis (RESEARCH §3). The ~41 `Apply` calls per frame also invalidate the
+  shadow constantly, which would hide redundancy across them.
+* **[V] ~41–47 `IDirect3DStateBlock9::Apply` per frame**, almost certainly SA-MP
+  text/sprite rendering (D3DX). Next measurement (added in 0.1.3): time spent
+  inside `Apply` per frame, and state blocks created per frame.
+* The frame-time spikes of 467–953 ms in that log were **measurement
+  artifacts**: another mod removed SAPE's hooks 5 times, and the
+  Present-to-Present interval spanning each gap was recorded as one frame.
+  Since 0.1.3 such intervals are discarded and logged.
+* Real hitches during loading/spawning coincide with texture creation bursts
+  (e.g. 414 textures created around a 91 ms frame), consistent with B3.
+* Virtual address space grew from 363 to 991 MB of 2048 MB in 30 s with a
+  non-LAA executable (B8).

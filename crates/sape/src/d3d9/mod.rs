@@ -338,7 +338,10 @@ fn hook_specs(cfg: &sape_core::config::Config) -> Vec<HookSpec> {
 /// The hooked device (for the watchdog and the swap-chain Present fallback).
 pub static DEVICE: AtomicUsize = AtomicUsize::new(0);
 static REHOOKS: AtomicU32 = AtomicU32::new(0);
-const MAX_REHOOKS: u32 = 20;
+/// Give up only if another mod removes our hooks this often (a "fight"):
+/// MAX_REHOOKS re-hooks within FIGHT_WINDOW_S seconds.
+const MAX_REHOOKS: usize = 10;
+const FIGHT_WINDOW_S: u64 = 60;
 
 /// Patches the device vtable according to the configuration.
 ///
@@ -466,6 +469,8 @@ fn watchdog() {
     let Some(rt) = crate::runtime() else { return };
     let specs = hook_specs(&rt.config);
     let mut seconds = 0u32;
+    let mut recent: std::collections::VecDeque<std::time::Instant> = Default::default();
+    let mut gave_up = false;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         seconds += 1;
@@ -481,8 +486,17 @@ fn watchdog() {
                     != Some(h.hook)
             })
             .collect();
-        if !missing.is_empty() && REHOOKS.load(Relaxed) < MAX_REHOOKS {
+        if !missing.is_empty() && !gave_up {
             let names: Vec<&str> = missing.iter().map(|h| h.name).collect();
+            // Who put something else into our slots?
+            let present_now = crate::win32::read_usize_checked(
+                vt + dev_vt::PRESENT * core::mem::size_of::<usize>(),
+            )
+            .unwrap_or(0);
+            crate::log_info!(
+                "watchdog: Present slot now -> {}",
+                crate::win32::describe_address(present_now)
+            );
             if vt != known {
                 crate::log_warn!(
                     "watchdog: device vtable changed {known:#x} -> {vt:#x} ({}); re-hooking: {}",
@@ -497,9 +511,19 @@ fn watchdog() {
             }
             // SAFETY: `vt` is the table the live device uses; validated before patching.
             unsafe { rehook(vt, &specs, &missing) };
-            if REHOOKS.load(Relaxed) >= MAX_REHOOKS {
+            crate::monitor::discard_next_interval();
+            let now = std::time::Instant::now();
+            recent.push_back(now);
+            while recent
+                .front()
+                .is_some_and(|t| now.duration_since(*t).as_secs() > FIGHT_WINDOW_S)
+            {
+                recent.pop_front();
+            }
+            if recent.len() >= MAX_REHOOKS {
+                gave_up = true;
                 crate::log_error!(
-                    "watchdog: {MAX_REHOOKS} re-hooks - another mod keeps removing SAPE's hooks; giving up to avoid a fight"
+                    "watchdog: {MAX_REHOOKS} re-hooks within {FIGHT_WINDOW_S} s - another mod keeps removing SAPE's hooks; giving up to avoid a fight"
                 );
             }
         }
