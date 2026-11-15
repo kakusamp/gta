@@ -42,6 +42,19 @@ proxy_case() {
   fi
   rm -f "$work/d3d9.dll"
 }
+# A mod below SAPE that moves the device vtable to the heap (seen in a real
+# GTA SA modpack). SAPE must still install its hooks and stay correct.
+shadow_case() {
+  printf '%b' "$2" > "$work/sape.ini"; rm -f "$work/sape.log"
+  echo "=== $1"
+  if (cd "$work" && timeout 300 xvfb-run -a -s "-screen 0 1024x768x24" wine harness.exe sape.dll 120 nobench shadow) \
+     && grep -q "device hooks (CreateDevice" "$work/sape.log" && grep -q "heap/private memory" "$work/sape.log"; then :; else
+    echo "!!! case '$1' failed"; fail=1
+  fi
+}
+shadow_case "wrapped device (heap vtable), filter on" "[monitor]\nlevel=2\n[state_filter]\nenabled=1\nfilter=1\n[resources]\ntrack=1\n"
+shadow_case "wrapped device (heap vtable), validate" "[monitor]\nlevel=1\n[state_filter]\nenabled=1\nfilter=1\nvalidate=1\n"
+
 proxy_case "d3d9.dll proxy, filter on" "[monitor]\nlevel=2\n[state_filter]\nenabled=1\nfilter=1\n[resources]\ntrack=1\n"
 proxy_case "d3d9.dll proxy, validate" "[monitor]\nlevel=1\n[state_filter]\nenabled=1\nfilter=1\nvalidate=1\n"
 [ "$fail" = 0 ] && echo "ALL SMOKE CASES PASSED" || { echo "SMOKE CASES FAILED"; exit 1; }

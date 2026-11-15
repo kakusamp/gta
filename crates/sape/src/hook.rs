@@ -34,15 +34,20 @@ pub unsafe fn patch_slot(
     if !win32::is_readable(addr, core::mem::size_of::<usize>()) {
         return Err(PatchError::Unreadable);
     }
+    // Already-writable memory (e.g. a vtable another mod copied to the heap)
+    // is patched without touching its protection.
+    let writable =
+        win32::region_info(addr).is_some_and(|(p, _)| p & win32::PAGE_WRITABLE_MASK != 0);
     let mut old_protect = 0u32;
     // EXECUTE_READWRITE (not READWRITE): if the slot shares a page with code,
     // removing execute permission would crash any thread running there.
-    if win32::VirtualProtect(
-        slot as *mut c_void,
-        core::mem::size_of::<usize>(),
-        PAGE_EXECUTE_READWRITE,
-        &mut old_protect,
-    ) == 0
+    if !writable
+        && win32::VirtualProtect(
+            slot as *mut c_void,
+            core::mem::size_of::<usize>(),
+            PAGE_EXECUTE_READWRITE,
+            &mut old_protect,
+        ) == 0
     {
         return Err(PatchError::ProtectFailed);
     }
@@ -59,13 +64,15 @@ pub unsafe fn patch_slot(
             }
         }
     }
-    let mut ignored = 0u32;
-    win32::VirtualProtect(
-        slot as *mut c_void,
-        core::mem::size_of::<usize>(),
-        old_protect,
-        &mut ignored,
-    );
+    if !writable {
+        let mut ignored = 0u32;
+        win32::VirtualProtect(
+            slot as *mut c_void,
+            core::mem::size_of::<usize>(),
+            old_protect,
+            &mut ignored,
+        );
+    }
     Ok(())
 }
 
@@ -104,15 +111,15 @@ pub unsafe fn unpatch_slot(slot: *mut usize, ours: usize, orig: &AtomicUsize) ->
 }
 
 /// Validates that `vtable` looks like a real COM vtable with `entries` slots:
-/// readable, inside a mapped image (DLL/EXE), and every entry points into
-/// executable memory.
+/// readable, and every entry points into executable memory.
+///
+/// The vtable itself may live outside a module image: wrapper mods commonly
+/// copy a device's vtable to the heap and swap the object's vtable pointer
+/// ("VMT shadowing"). That was observed in a real GTA SA + SA-MP modpack, so
+/// only readability and executable entries are required.
 pub fn validate_vtable(vtable: usize, entries: usize) -> bool {
     if !win32::is_readable(vtable, entries * core::mem::size_of::<usize>()) {
         return false;
-    }
-    match win32::region_info(vtable) {
-        Some((_, ty)) if ty == win32::MEM_IMAGE => {}
-        _ => return false,
     }
     (0..entries).all(|i| {
         // SAFETY: range validated readable above.

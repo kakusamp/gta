@@ -125,6 +125,24 @@ act when the claim does not hold.
   shows `sb_apply` per frame; a non-zero value in SA-MP and zero in single
   player would confirm it. SAPE's filter already invalidates on every `Apply`.
 
+### 2.4 First real-world log (GTA SA 1.0 US + SA-MP 0.3.7-R1 modpack, Windows)
+
+* **[V]** The `d3d9.dll` proxy loaded and forwarded to `C:\WINDOWS\system32\d3d9.dll`;
+  version detection reported 1.0 US (timestamp `0x427101ca`), the SA-MP
+  build table matched 0.3.7-R1 (entry RVA `0x31df13`), executable not LAA.
+* **[V]** `Direct3DCreate9` was called **twice** (SDK `0x1f`).
+* **[V]** `CreateDevice` was called with behaviour `0x50` =
+  `D3DCREATE_PUREDEVICE | D3DCREATE_HARDWARE_VERTEXPROCESSING`, 1920×1080
+  fullscreen, `D3DPRESENT_INTERVAL_IMMEDIATE`. On a pure device the filter's
+  validation mode is unavailable.
+* **[V]** The returned device's vtable was in **private (heap) memory**: a mod
+  in the pack wraps the device by copying its vtable and swapping the object's
+  vtable pointer (VMT shadowing) *below* SAPE's CreateDevice hook. SAPE 0.1.0
+  required vtables to be in a module image and therefore refused to hook. Fixed:
+  vtables only need to be readable with executable entries, writable pages are
+  patched without changing protection, and the log names the module owning
+  the vtable and `Present`. The smoke test now reproduces this case (`shadow` mode).
+
 ---
 
 ## 3. RenderWare rendering architecture (as used by GTA SA)

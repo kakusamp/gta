@@ -157,6 +157,16 @@ pub unsafe fn install_device_hooks(dev: *mut Device, origin: &str) -> bool {
     let Some(vt) = crate::win32::read_usize_checked(dev as usize) else {
         return false;
     };
+    // Who owns the vtable and its Present? Tells us which wrapper sits below us.
+    let present =
+        crate::win32::read_usize_checked(vt + dev_vt::PRESENT * core::mem::size_of::<usize>())
+            .unwrap_or(0);
+    crate::log_info!(
+        "device {:p}: vtable {vt:#x} in {}, Present -> {}",
+        dev,
+        crate::win32::describe_address(vt),
+        crate::win32::describe_address(present)
+    );
     if !validate_vtable(vt, dev_vt::COUNT) {
         crate::log_error!("device vtable {vt:#x} failed validation ({origin}); not hooking");
         return false;

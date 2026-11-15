@@ -11,7 +11,7 @@
  * Every check compares against the device's real state via Get*.
  *
  * Build: i686-w64-mingw32-gcc -O2 harness.c -o harness.exe -ld3d9 -luser32 -lgdi32
- * Run:   wine harness.exe <path-to-sape.dll|none> [frames] [bench]
+ * Run:   wine harness.exe <path-to-sape.dll|none> [frames] [bench|nobench] [shadow]
  *
  * "bench" adds a call-overhead micro-benchmark (ns per SetRenderState call,
  * redundant vs. changing values). Under Wine this measures wined3d, not the
@@ -32,11 +32,42 @@ static DWORD rs(IDirect3DDevice9 *d, D3DRENDERSTATETYPE s) { DWORD v = 0xDEADBEE
 
 struct V { float x, y, z, rhw; DWORD c; };
 
+/* "shadow" mode: emulate a mod that wraps the device by copying its vtable to
+ * the heap and swapping the object's vtable pointer (VMT shadowing), installed
+ * BEFORE SAPE so it sits below SAPE's CreateDevice hook (seen in a real
+ * GTA SA modpack). */
+typedef HRESULT (WINAPI *CreateDeviceFn)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *, IDirect3DDevice9 **);
+static CreateDeviceFn real_create_device;
+static HRESULT WINAPI shadow_create_device(IDirect3D9 *self, UINT a, D3DDEVTYPE t, HWND w, DWORD f,
+                                           D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out) {
+    HRESULT hr = real_create_device(self, a, t, w, f, pp, out);
+    if (SUCCEEDED(hr)) {
+        void **vt = *(void ***)*out;
+        void **copy = HeapAlloc(GetProcessHeap(), 0, 119 * sizeof(void *));
+        memcpy(copy, vt, 119 * sizeof(void *));
+        *(void ***)*out = copy;
+        printf("shadow: device vtable moved from %p to heap %p\n", (void *)vt, (void *)copy);
+    }
+    return hr;
+}
+static void install_shadow_wrapper(void) {
+    IDirect3D9 *d = Direct3DCreate9(D3D_SDK_VERSION); /* before SAPE: not hooked */
+    void **slot = &(*(void ***)d)[16];
+    DWORD old;
+    VirtualProtect(slot, sizeof(void *), PAGE_EXECUTE_READWRITE, &old);
+    real_create_device = (CreateDeviceFn)*slot;
+    *slot = (void *)shadow_create_device;
+    VirtualProtect(slot, sizeof(void *), old, &old);
+    IDirect3D9_Release(d);
+    printf("shadow: wrapper installed below SAPE\n");
+}
+
 int main(int argc, char **argv) {
     const char *dll = argc > 1 ? argv[1] : "sape.dll";
     int frames = argc > 2 ? atoi(argv[2]) : 300;
 
     int bench = argc > 3 && strcmp(argv[3], "bench") == 0;
+    if (argc > 4 && strcmp(argv[4], "shadow") == 0) install_shadow_wrapper();
     if (strcmp(dll, "none") != 0) {
         HMODULE m = LoadLibraryA(dll);
         printf("LoadLibrary(%s) = %p\n", dll, (void *)m);

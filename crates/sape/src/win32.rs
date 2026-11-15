@@ -23,6 +23,9 @@ pub const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 /// READONLY | READWRITE | WRITECOPY | EXECUTE_READ | EXECUTE_READWRITE | EXECUTE_WRITECOPY
 pub const PAGE_READABLE_MASK: u32 = 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
 pub const PAGE_EXECUTABLE_MASK: u32 = 0x10 | 0x20 | 0x40 | 0x80;
+/// READWRITE | EXECUTE_READWRITE (WRITECOPY pages are deliberately excluded:
+/// writing them would trigger a private copy we would rather make explicit).
+pub const PAGE_WRITABLE_MASK: u32 = 0x04 | 0x40;
 
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
@@ -100,6 +103,7 @@ extern "system" {
         len: usize,
     ) -> usize;
     pub fn GetModuleHandleW(name: *const u16) -> HMODULE;
+    pub fn GetModuleHandleExW(flags: u32, name: *const u16, out: *mut HMODULE) -> BOOL;
     pub fn LoadLibraryW(name: *const u16) -> HMODULE;
     pub fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
     pub fn GetModuleFileNameW(module: HMODULE, buf: *mut u16, size: u32) -> u32;
@@ -241,4 +245,31 @@ pub fn process_has_focus() -> bool {
 pub fn key_down(vk: i32) -> bool {
     // SAFETY: no preconditions.
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+}
+
+/// Describes where `addr` lives, e.g. `d3d9.dll+0x1234` or `heap/private`.
+pub fn describe_address(addr: usize) -> String {
+    const FROM_ADDRESS: u32 = 0x4;
+    const UNCHANGED_REFCOUNT: u32 = 0x2;
+    let mut h: HMODULE = core::ptr::null_mut();
+    // SAFETY: with FROM_ADDRESS the "name" parameter is interpreted as an address.
+    let ok = unsafe {
+        GetModuleHandleExW(
+            FROM_ADDRESS | UNCHANGED_REFCOUNT,
+            addr as *const u16,
+            &mut h,
+        )
+    };
+    if ok != 0 && !h.is_null() {
+        let name = module_path(h)
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "?".into());
+        format!("{name}+{:#x}", addr - h as usize)
+    } else {
+        match region_info(addr) {
+            Some((_, MEM_IMAGE)) => "unnamed image".into(),
+            Some(_) => "heap/private memory".into(),
+            None => "unmapped".into(),
+        }
+    }
 }
