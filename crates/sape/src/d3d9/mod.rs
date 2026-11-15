@@ -71,7 +71,11 @@ unsafe extern "system" fn hk_direct3d_create9(sdk: u32) -> *mut c_void {
     d3d
 }
 
-unsafe fn hook_d3d9_object(d3d: *mut c_void) {
+/// Hooks `IDirect3D9::CreateDevice` on a freshly created IDirect3D9.
+///
+/// # Safety
+/// `d3d` must be a valid IDirect3D9 object.
+pub unsafe fn hook_d3d9_object(d3d: *mut c_void) {
     let vt = *(d3d as *const usize);
     if !validate_vtable(vt, d3d9_vt::COUNT) {
         crate::log_error!("IDirect3D9 vtable {vt:#x} failed validation; not hooking");

@@ -25,6 +25,7 @@ crates/
     resources.rs              memory_manager (measurement): texture/buffer tracking
     game.rs                   renderware_hook foundation: version detection, address table
     samp.rs                   samp_compatibility: client detection (read-only)
+    proxy.rs                  d3d9.dll proxy mode: forwards documented d3d9 exports, optional chain-load
 tools/
   sape-analyze/               offline CSV analyzer (A/B comparison)
   smoke-test/                 C harness + Wine runner for correctness tests
@@ -49,6 +50,20 @@ ntdll, msvcrt, bcryptprimitives, api-ms-win-core-synch).
 | adaptive_engine | — | ⏳ design below; no code until ≥2 optimizations are proven |
 | configuration_manager | `sape-core/src/config.rs` | ✅ |
 | logging_system | `sape/src/log.rs` | ✅ |
+
+## Load modes
+
+The same binary runs in two modes, selected by its file name:
+
+| File name | Mode | Entry into D3D9 |
+|---|---|---|
+| `d3d9.dll` (next to the exe) | **proxy** | The game imports *our* `Direct3DCreate9`; we forward to `[proxy] chain` or `<system dir>\d3d9.dll` (loaded lazily on the first call, never under the loader lock) and hook the returned IDirect3D9. Config/log are named `sape.ini`/`sape.log`. |
+| anything else (`sape.asi`, ...) | **plugin** | IAT patch of the executable's `d3d9.dll!Direct3DCreate9` import (+ late attach). |
+
+Only documented `d3d9.h` exports are provided in proxy mode: `Direct3DCreate9`,
+`Direct3DCreate9Ex` (forwarded, not hooked), and the seven `D3DPERF_*`
+functions. Undocumented internal exports are not provided because their
+signatures are not published. Both modes are covered by the Wine smoke test.
 
 ## Boot sequence
 

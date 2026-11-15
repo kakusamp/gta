@@ -13,6 +13,14 @@ jobs:
       - run: cargo test -p sape-core -p sape-analyze
       - run: cargo clippy -p sape --release --target i686-pc-windows-msvc -- -D warnings
       - run: cargo build -p sape --release --target i686-pc-windows-msvc
+      - name: d3d9 proxy exports must be undecorated
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Select-Object -First 1
+          $out = & $dumpbin.FullName /exports target/i686-pc-windows-msvc/release/sape.dll | Out-String
+          Write-Output $out
+          if ($out -notmatch '\sDirect3DCreate9\r?\n' -or $out -match 'Direct3DCreate9@') { throw "Direct3DCreate9 not exported undecorated" }
       - uses: actions/upload-artifact@v4
         with:
           name: sape-i686-msvc

@@ -100,6 +100,8 @@ extern "system" {
         len: usize,
     ) -> usize;
     pub fn GetModuleHandleW(name: *const u16) -> HMODULE;
+    pub fn LoadLibraryW(name: *const u16) -> HMODULE;
+    pub fn GetSystemDirectoryW(buf: *mut u16, size: u32) -> u32;
     pub fn GetModuleFileNameW(module: HMODULE, buf: *mut u16, size: u32) -> u32;
     pub fn GetProcAddress(module: HMODULE, name: *const u8) -> *mut c_void;
     pub fn DisableThreadLibraryCalls(module: HMODULE) -> BOOL;

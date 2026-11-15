@@ -79,6 +79,14 @@ pub struct CompatConfig {
     pub allow_unknown_exe: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProxyConfig {
+    /// Only used when SAPE is installed as `d3d9.dll`: the DLL to forward to.
+    /// Empty = the system d3d9.dll. Set it to e.g. `d3d9_reshade.dll` or
+    /// `d3d9_dxvk.dll` to chain-load another d3d9 wrapper.
+    pub chain: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub log_level: LogLevel,
@@ -87,6 +95,7 @@ pub struct Config {
     pub resources: ResourceConfig,
     pub hotkeys: HotkeyConfig,
     pub compat: CompatConfig,
+    pub proxy: ProxyConfig,
 }
 
 impl Default for Config {
@@ -122,6 +131,7 @@ impl Default for Config {
                 late_attach: true,
                 allow_unknown_exe: true,
             },
+            proxy: ProxyConfig::default(),
         }
     }
 }
@@ -264,6 +274,9 @@ impl Config {
             &mut c.compat.allow_unknown_exe,
             &mut w,
         );
+        if let Some(v) = ini.get("proxy", "chain") {
+            c.proxy.chain = v.trim_matches('"').to_string();
+        }
 
         if c.state_filter.filter && !c.state_filter.enabled {
             w.push("state_filter.filter=1 has no effect while state_filter.enabled=0".into());
@@ -331,6 +344,14 @@ mod tests {
         assert_eq!(c.hotkeys.toggle_filter, 0x78);
         assert!(!c.resources.track);
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn proxy_chain() {
+        assert_eq!(Config::default().proxy.chain, "");
+        let (c, w) = Config::from_ini_text("[proxy]\nchain = \"d3d9_reshade.dll\"");
+        assert_eq!(c.proxy.chain, "d3d9_reshade.dll");
+        assert!(w.is_empty());
     }
 
     #[test]

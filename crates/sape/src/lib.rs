@@ -15,6 +15,7 @@ pub mod game;
 pub mod hook;
 pub mod log;
 pub mod monitor;
+pub mod proxy;
 pub mod render_optimizer;
 pub mod resources;
 pub mod samp;
@@ -63,6 +64,10 @@ fn init(module: win32::HMODULE) {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "sape".into());
+    // Installed as d3d9.dll -> proxy mode. Config/log keep the name "sape" so
+    // they never collide with other d3d9 wrappers' d3d9.ini / d3d9.log.
+    let proxy_mode = stem.eq_ignore_ascii_case("d3d9");
+    let stem = if proxy_mode { "sape".to_string() } else { stem };
     let ini_path = dir.join(format!("{stem}.ini"));
 
     let (text, created) = match std::fs::read_to_string(&ini_path) {
@@ -73,6 +78,8 @@ fn init(module: win32::HMODULE) {
         }
     };
     let (config, warnings) = Config::from_ini_text(&text);
+    // Forwarding must work even if SAPE later decides to stay inactive.
+    proxy::configure(module, &dir, &config.proxy.chain);
 
     log::init(&dir.join(format!("{stem}.log")), config.log_level);
     log_info!(
@@ -86,6 +93,18 @@ fn init(module: win32::HMODULE) {
     }
     for w in &warnings {
         log_warn!("config: {w}");
+    }
+    if proxy_mode {
+        log_info!(
+            "mode: d3d9.dll proxy (forwarding to {})",
+            if config.proxy.chain.is_empty() {
+                "system d3d9.dll"
+            } else {
+                &config.proxy.chain
+            }
+        );
+    } else {
+        log_info!("mode: plugin (ASI / LoadLibrary), hooking via the executable's import table");
     }
 
     let game = game::detect();
@@ -139,6 +158,9 @@ fn init(module: win32::HMODULE) {
         return;
     }
 
+    if proxy_mode {
+        return; // our exported Direct3DCreate9 installs the hooks
+    }
     d3d9::install_iat_hook();
     if late_attach {
         if let Some(addr) = game::rw_device_ptr(version) {

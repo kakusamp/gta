@@ -56,14 +56,26 @@ cargo run -p sape-analyze --release -- sape_frames_*.csv
 tools/smoke-test/run.sh
 ```
 
-Output: `target/<triple>/release/sape.dll`.
+Output: `target/<triple>/release/sape.dll`. The proxy exports
+(`Direct3DCreate9`, `Direct3DCreate9Ex`, `D3DPERF_*`) must be undecorated; the
+mingw build uses `--kill-at` for that, and CI checks the MSVC build's export table.
 
 ## Install
 
-1. Install an ASI loader (e.g. Ultimate ASI Loader). SA-MP and CLEO setups usually already have one.
-2. Copy `sape.dll` into the game folder (or `scripts/`) and rename it to **`sape.asi`**.
-3. Start the game once: `sape.ini` and `sape.log` appear next to the ASI.
-4. To uninstall, delete `sape.asi`. Nothing else is modified.
+SAPE is one DLL that works in two modes, chosen by its file name:
+
+**A. `d3d9.dll` proxy (recommended, no ASI loader needed)**
+
+1. Copy `sape.dll` next to `gta_sa.exe` and rename it to **`d3d9.dll`**.
+2. Start the game: `sape.ini` and `sape.log` appear in the game folder.
+3. If you already have another `d3d9.dll` (ReShade, DXVK, ENB, ...), rename
+   that one first (e.g. `d3d9_reshade.dll`) and set `[proxy] chain = d3d9_reshade.dll`.
+   SAPE then loads it instead of the system d3d9.dll.
+
+**B. Plugin**: rename it to `sape.asi` and use an ASI loader (or load it with
+`LoadLibrary`). SAPE then hooks the game's import of `Direct3DCreate9`.
+
+To uninstall, delete the file. Nothing else is modified.
 
 Supported: Windows 10/11, `gta_sa.exe` 1.0 US (other versions get D3D9-level
 features only), SA-MP 0.3.7 / 0.3.DL, with or without DXVK / ReShade.

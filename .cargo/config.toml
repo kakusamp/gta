@@ -4,7 +4,9 @@
 [target.i686-pc-windows-gnu]
 linker = "i686-w64-mingw32-gcc"
 # stdcall-fixup: mingw's DLL CRT references the undecorated DllMain symbol.
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-Wl,--enable-stdcall-fixup"]
+# kill-at: export stdcall functions undecorated (Direct3DCreate9, not Direct3DCreate9@4),
+# which is required for the d3d9.dll proxy.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-Wl,--enable-stdcall-fixup", "-C", "link-arg=-Wl,--kill-at"]
 
 [target.i686-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
