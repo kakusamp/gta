@@ -13,10 +13,14 @@ use crate::monitor::{self, bump, C};
 use crate::render_optimizer::{self as ro, StageKind};
 use crate::{hook, resources};
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicUsize, Ordering::*};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering::*};
 use std::time::Instant;
 
 pub static ORIG_PRESENT: AtomicUsize = AtomicUsize::new(0);
+pub static ORIG_SC_PRESENT: AtomicUsize = AtomicUsize::new(0);
+/// Frames seen through IDirect3DDevice9::Present / IDirect3DSwapChain9::Present.
+pub static DEVICE_PRESENTS: AtomicU64 = AtomicU64::new(0);
+pub static SC_PRESENTS: AtomicU64 = AtomicU64::new(0);
 pub static ORIG_RESET: AtomicUsize = AtomicUsize::new(0);
 pub static ORIG_SET_RENDER_STATE: AtomicUsize = AtomicUsize::new(0);
 pub static ORIG_SET_SAMPLER_STATE: AtomicUsize = AtomicUsize::new(0);
@@ -57,6 +61,12 @@ pub unsafe extern "system" fn hk_present(
     dirty: *const c_void,
 ) -> HRESULT {
     let orig = orig!(ORIG_PRESENT as PresentFn);
+    DEVICE_PRESENTS.fetch_add(1, Relaxed);
+    frame(dev);
+    orig(dev, src, dst, wnd, dirty)
+}
+
+unsafe fn frame(dev: *mut Device) {
     if let Some(rt) = crate::runtime() {
         // Late attach: the first Present tells us which thread renders.
         ro::set_owner_thread(crate::win32::current_thread_id());
@@ -65,7 +75,29 @@ pub unsafe extern "system" fn hk_present(
             monitor::on_present(dev, &rt.config);
         }
     }
-    orig(dev, src, dst, wnd, dirty)
+}
+
+/// Frames presented through the swap chain are counted; they drive the monitor
+/// only if the device's own Present has never been seen (no double counting).
+pub unsafe extern "system" fn hk_swap_chain_present(
+    sc: *mut c_void,
+    src: *const c_void,
+    dst: *const c_void,
+    wnd: *mut c_void,
+    dirty: *const c_void,
+    flags: u32,
+) -> HRESULT {
+    let orig = orig!(ORIG_SC_PRESENT as SwapChainPresentFn);
+    if SC_PRESENTS.fetch_add(1, Relaxed) == 0 {
+        crate::log_info!("first swap-chain Present observed");
+    }
+    if DEVICE_PRESENTS.load(Relaxed) == 0 {
+        let dev = super::DEVICE.load(Acquire) as *mut Device;
+        if !dev.is_null() {
+            frame(dev);
+        }
+    }
+    orig(sc, src, dst, wnd, dirty, flags)
 }
 
 pub unsafe extern "system" fn hk_reset(

@@ -71,3 +71,21 @@ macro_rules! log_warn { ($($t:tt)*) => { $crate::log::write(sape_core::config::L
 macro_rules! log_info { ($($t:tt)*) => { $crate::log::write(sape_core::config::LogLevel::Info, format_args!($($t)*)) } }
 #[macro_export]
 macro_rules! log_debug { ($($t:tt)*) => { $crate::log::write(sape_core::config::LogLevel::Debug, format_args!($($t)*)) } }
+
+/// Like [`write`] but never blocks (for DllMain at process exit, where a
+/// thread killed while holding the lock would otherwise deadlock us).
+pub fn try_write(level: LogLevel, args: fmt::Arguments) {
+    if !enabled(level) {
+        return;
+    }
+    let t = START
+        .get()
+        .map(|s| s.elapsed().as_secs_f64())
+        .unwrap_or(0.0);
+    if let Ok(mut g) = FILE.try_lock() {
+        if let Some(f) = g.as_mut() {
+            let _ = writeln!(f, "[{t:10.3}] INFO  {args}");
+            let _ = f.flush();
+        }
+    }
+}

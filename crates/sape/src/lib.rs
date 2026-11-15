@@ -51,6 +51,15 @@ pub unsafe extern "system" fn DllMain(
     if reason == win32::DLL_PROCESS_ATTACH {
         win32::DisableThreadLibraryCalls(module);
         init(module);
+    } else if reason == win32::DLL_PROCESS_DETACH && RUNTIME.get().is_some() {
+        log::try_write(
+            sape_core::config::LogLevel::Info,
+            format_args!(
+                "process exit: device Present calls {}, swap-chain Present calls {}",
+                d3d9::hooks::DEVICE_PRESENTS.load(core::sync::atomic::Ordering::Relaxed),
+                d3d9::hooks::SC_PRESENTS.load(core::sync::atomic::Ordering::Relaxed)
+            ),
+        );
     }
     // On detach we deliberately do not unhook: at process exit d3d9.dll may
     // already be gone, and ASI plugins are never unloaded mid-session.

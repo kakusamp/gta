@@ -149,49 +149,23 @@ pub fn late_attach(device_ptr_addr: usize) -> bool {
 ///
 /// # Safety
 /// `dev` must be a live IDirect3DDevice9.
-pub unsafe fn install_device_hooks(dev: *mut Device, origin: &str) -> bool {
-    let Some(rt) = crate::runtime() else {
-        return false;
-    };
-    let cfg = &rt.config;
-    let Some(vt) = crate::win32::read_usize_checked(dev as usize) else {
-        return false;
-    };
-    // Who owns the vtable and its Present? Tells us which wrapper sits below us.
-    let present =
-        crate::win32::read_usize_checked(vt + dev_vt::PRESENT * core::mem::size_of::<usize>())
-            .unwrap_or(0);
-    crate::log_info!(
-        "device {:p}: vtable {vt:#x} in {}, Present -> {}",
-        dev,
-        crate::win32::describe_address(vt),
-        crate::win32::describe_address(present)
-    );
-    if !validate_vtable(vt, dev_vt::COUNT) {
-        crate::log_error!("device vtable {vt:#x} failed validation ({origin}); not hooking");
-        return false;
-    }
-    match DEVICE_VTABLE.compare_exchange(0, vt, AcqRel, Acquire) {
-        Ok(_) => {}
-        Err(prev) if prev == vt => {
-            crate::log_info!("device vtable {vt:#x} already hooked ({origin})");
-            return true;
-        }
-        Err(prev) => {
-            crate::log_warn!(
-                "new device class (vtable {vt:#x}, hooked {prev:#x}) - not hooking ({origin})"
-            );
-            return false;
-        }
-    }
+/// One device-vtable hook: (slot index, hook fn, original-pointer cell, name, is state-tracking).
+#[derive(Clone, Copy)]
+struct HookSpec {
+    index: usize,
+    hook: usize,
+    orig: &'static AtomicUsize,
+    name: &'static str,
+    state: bool,
+}
 
+/// The device hooks wanted by the configuration.
+fn hook_specs(cfg: &sape_core::config::Config) -> Vec<HookSpec> {
     let full = cfg.monitor.level >= sape_core::config::MonitorLevel::Full;
     let filter = cfg.state_filter.enabled;
     let res = cfg.resources.track;
-    let pure = BEHAVIOR_FLAGS.load(Relaxed) & D3DCREATE_PUREDEVICE != 0;
-
     use hooks::*;
-    let table: &[(bool, usize, usize, &AtomicUsize, &str)] = &[
+    let all: [(bool, usize, usize, &'static AtomicUsize, &'static str); 21] = [
         (
             cfg.needs_frame_hooks(),
             dev_vt::PRESENT,
@@ -340,24 +314,79 @@ pub unsafe fn install_device_hooks(dev: *mut Device, origin: &str) -> bool {
             "CreateIndexBuffer",
         ),
     ];
+    let state_slots = [
+        dev_vt::SET_RENDER_STATE,
+        dev_vt::SET_SAMPLER_STATE,
+        dev_vt::SET_TEXTURE_STAGE_STATE,
+        dev_vt::BEGIN_STATE_BLOCK,
+        dev_vt::END_STATE_BLOCK,
+        dev_vt::CREATE_STATE_BLOCK,
+        dev_vt::RESET,
+    ];
+    all.iter()
+        .filter(|e| e.0)
+        .map(|&(_, index, hook, orig, name)| HookSpec {
+            index,
+            hook,
+            orig,
+            name,
+            state: filter && state_slots.contains(&index),
+        })
+        .collect()
+}
 
-    // State hooks must be all-or-nothing: a filter missing its invalidation
-    // hooks (Reset / state blocks) could skip calls it must not skip.
+/// The hooked device (for the watchdog and the swap-chain Present fallback).
+pub static DEVICE: AtomicUsize = AtomicUsize::new(0);
+static REHOOKS: AtomicU32 = AtomicU32::new(0);
+const MAX_REHOOKS: u32 = 20;
+
+/// Patches the device vtable according to the configuration.
+///
+/// # Safety
+/// `dev` must be a live IDirect3DDevice9.
+pub unsafe fn install_device_hooks(dev: *mut Device, origin: &str) -> bool {
+    let Some(rt) = crate::runtime() else {
+        return false;
+    };
+    let cfg = &rt.config;
+    let Some(vt) = crate::win32::read_usize_checked(dev as usize) else {
+        return false;
+    };
+    log_vtable_owner(dev, vt);
+    if !validate_vtable(vt, dev_vt::COUNT) {
+        crate::log_error!("device vtable {vt:#x} failed validation ({origin}); not hooking");
+        return false;
+    }
+    match DEVICE_VTABLE.compare_exchange(0, vt, AcqRel, Acquire) {
+        Ok(_) => {}
+        Err(prev) if prev == vt => {
+            crate::log_info!("device vtable {vt:#x} already hooked ({origin})");
+            return true;
+        }
+        Err(prev) => {
+            crate::log_warn!(
+                "new device class (vtable {vt:#x}, hooked {prev:#x}) - not hooking ({origin})"
+            );
+            return false;
+        }
+    }
+    DEVICE.store(dev as usize, Release);
+
+    let filter = cfg.state_filter.enabled;
     let mut installed = Vec::new();
     let mut failed = Vec::new();
-    for &(wanted, index, hook, orig, name) in table {
-        if !wanted {
-            continue;
-        }
-        match patch_slot((vt as *mut usize).add(index), hook, orig) {
-            Ok(()) => installed.push(name),
-            Err(e) => failed.push(format!("{name}: {e:?}")),
+    for h in hook_specs(cfg) {
+        match patch_slot((vt as *mut usize).add(h.index), h.hook, h.orig) {
+            Ok(()) => installed.push(h.name),
+            Err(e) => failed.push(format!("{}: {e:?}", h.name)),
         }
     }
     crate::log_info!(
         "device hooks ({origin}, vtable {vt:#x}): {}",
         installed.join(", ")
     );
+    // State hooks must be all-or-nothing: a filter missing its invalidation
+    // hooks (Reset / state blocks) could skip calls it must not skip.
     if !failed.is_empty() {
         crate::log_error!("device hooks failed: {}", failed.join("; "));
         if filter {
@@ -366,8 +395,153 @@ pub unsafe fn install_device_hooks(dev: *mut Device, origin: &str) -> bool {
             ));
         }
     }
-    if filter && pure {
+    if filter && BEHAVIOR_FLAGS.load(Relaxed) & D3DCREATE_PUREDEVICE != 0 {
         crate::log_info!("device is PURE: validation mode unavailable");
     }
+    if cfg.needs_frame_hooks() {
+        hook_swap_chain(dev);
+        start_watchdog();
+    }
     true
+}
+
+fn log_vtable_owner(dev: *mut Device, vt: usize) {
+    let present =
+        crate::win32::read_usize_checked(vt + dev_vt::PRESENT * core::mem::size_of::<usize>())
+            .unwrap_or(0);
+    crate::log_info!(
+        "device {:p}: vtable {vt:#x} in {}, Present -> {}",
+        dev,
+        crate::win32::describe_address(vt),
+        crate::win32::describe_address(present)
+    );
+}
+
+/// Hooks `IDirect3DSwapChain9::Present` of the implicit swap chain. Frames
+/// presented this way are counted, and used as the frame source if the
+/// device's own `Present` is never called.
+unsafe fn hook_swap_chain(dev: *mut Device) {
+    let vt = *(dev as *const *const usize);
+    let get: GetSwapChainFn = core::mem::transmute(*vt.add(dev_vt::GET_SWAP_CHAIN));
+    let mut sc: *mut c_void = core::ptr::null_mut();
+    if get(dev, 0, &mut sc) < 0 || sc.is_null() {
+        crate::log_warn!("GetSwapChain(0) failed; swap-chain Present not tracked");
+        return;
+    }
+    let sc_vt = *(sc as *const usize);
+    if validate_vtable(sc_vt, sc_vt::COUNT) {
+        match patch_slot(
+            (sc_vt as *mut usize).add(sc_vt::PRESENT),
+            hooks::hk_swap_chain_present as *const () as usize,
+            &hooks::ORIG_SC_PRESENT,
+        ) {
+            Ok(()) => crate::log_info!(
+                "hooked IDirect3DSwapChain9::Present (vtable {sc_vt:#x} in {})",
+                crate::win32::describe_address(sc_vt)
+            ),
+            Err(e) => crate::log_warn!("swap-chain Present hook failed: {e:?}"),
+        }
+    }
+    let release: ReleaseFn = core::mem::transmute(*(sc_vt as *const usize).add(unk_vt::RELEASE));
+    release(sc);
+}
+
+fn start_watchdog() {
+    static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, AcqRel) {
+        return;
+    }
+    let r = std::thread::Builder::new()
+        .name("sape-watchdog".into())
+        .spawn(watchdog);
+    if let Err(e) = r {
+        crate::log_warn!("watchdog thread not started: {e}");
+    }
+}
+
+/// Once per second: makes sure our hooks are still in the table the device
+/// actually uses. Some wrapper mods re-copy the device vtable (e.g. after a
+/// Reset), which silently drops every hook installed in the previous copy.
+fn watchdog() {
+    let Some(rt) = crate::runtime() else { return };
+    let specs = hook_specs(&rt.config);
+    let mut seconds = 0u32;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        seconds += 1;
+        let dev = DEVICE.load(Acquire);
+        let Some(vt) = crate::win32::read_usize_checked(dev) else {
+            continue;
+        };
+        let known = DEVICE_VTABLE.load(Acquire);
+        let missing: Vec<&HookSpec> = specs
+            .iter()
+            .filter(|h| {
+                crate::win32::read_usize_checked(vt + h.index * core::mem::size_of::<usize>())
+                    != Some(h.hook)
+            })
+            .collect();
+        if !missing.is_empty() && REHOOKS.load(Relaxed) < MAX_REHOOKS {
+            let names: Vec<&str> = missing.iter().map(|h| h.name).collect();
+            if vt != known {
+                crate::log_warn!(
+                    "watchdog: device vtable changed {known:#x} -> {vt:#x} ({}); re-hooking: {}",
+                    crate::win32::describe_address(vt),
+                    names.join(", ")
+                );
+            } else {
+                crate::log_warn!(
+                    "watchdog: hooks removed from vtable {vt:#x}; re-hooking: {}",
+                    names.join(", ")
+                );
+            }
+            // SAFETY: `vt` is the table the live device uses; validated before patching.
+            unsafe { rehook(vt, &specs, &missing) };
+            if REHOOKS.load(Relaxed) >= MAX_REHOOKS {
+                crate::log_error!(
+                    "watchdog: {MAX_REHOOKS} re-hooks - another mod keeps removing SAPE's hooks; giving up to avoid a fight"
+                );
+            }
+        }
+        if matches!(seconds, 5 | 15 | 30 | 60) || (seconds % 300 == 0) {
+            crate::log_info!(
+                "watchdog {seconds}s: device Present calls {}, swap-chain Present calls {}, vtable {vt:#x}, re-hooks {}",
+                hooks::DEVICE_PRESENTS.load(Relaxed),
+                hooks::SC_PRESENTS.load(Relaxed),
+                REHOOKS.load(Relaxed)
+            );
+        }
+    }
+}
+
+unsafe fn rehook(vt: usize, specs: &[HookSpec], missing: &[&HookSpec]) {
+    REHOOKS.fetch_add(1, Relaxed);
+    if !validate_vtable(vt, dev_vt::COUNT) {
+        crate::log_error!("watchdog: new vtable {vt:#x} failed validation; not re-hooking");
+        return;
+    }
+    // If every state hook vanished at once (a fresh copy of the table), no call
+    // was filtered meanwhile and an invalidation makes the shadow sound again.
+    // If only some vanished, a filtered call may have missed an invalidation:
+    // lock the filter off for the session.
+    let state_total = specs.iter().filter(|h| h.state).count();
+    let state_missing = missing.iter().filter(|h| h.state).count();
+    if state_missing > 0 && state_missing < state_total {
+        ro::lock_off(format_args!(
+            "another mod removed only some state-tracking hooks"
+        ));
+    }
+    ro::invalidate_any_thread();
+    for h in missing {
+        if let Err(e) = patch_slot((vt as *mut usize).add(h.index), h.hook, h.orig) {
+            crate::log_error!("watchdog: re-hooking {} failed: {e:?}", h.name);
+            if h.state {
+                ro::lock_off(format_args!(
+                    "state hook {} could not be re-installed",
+                    h.name
+                ));
+            }
+        }
+    }
+    DEVICE_VTABLE.store(vt, Release);
 }

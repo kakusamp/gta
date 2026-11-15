@@ -44,16 +44,20 @@ proxy_case() {
 }
 # A mod below SAPE that moves the device vtable to the heap (seen in a real
 # GTA SA modpack). SAPE must still install its hooks and stay correct.
-shadow_case() {
+shadow_case() { # name, ini, mode, extra log pattern that must appear
   printf '%b' "$2" > "$work/sape.ini"; rm -f "$work/sape.log"
   echo "=== $1"
-  if (cd "$work" && timeout 300 xvfb-run -a -s "-screen 0 1024x768x24" wine harness.exe sape.dll 120 nobench shadow) \
-     && grep -q "device hooks (CreateDevice" "$work/sape.log" && grep -q "heap/private memory" "$work/sape.log"; then :; else
+  if (cd "$work" && timeout 300 xvfb-run -a -s "-screen 0 1024x768x24" wine harness.exe sape.dll 120 nobench "$3") \
+     && grep -q "device hooks (CreateDevice" "$work/sape.log" && grep -q "heap/private memory" "$work/sape.log" \
+     && grep -q "$4" "$work/sape.log"; then :; else
     echo "!!! case '$1' failed"; fail=1
   fi
 }
-shadow_case "wrapped device (heap vtable), filter on" "[monitor]\nlevel=2\n[state_filter]\nenabled=1\nfilter=1\n[resources]\ntrack=1\n"
-shadow_case "wrapped device (heap vtable), validate" "[monitor]\nlevel=1\n[state_filter]\nenabled=1\nfilter=1\nvalidate=1\n"
+shadow_case "wrapped device (heap vtable), filter on" "[monitor]\nlevel=2\n[state_filter]\nenabled=1\nfilter=1\n[resources]\ntrack=1\n" shadow "first Present observed"
+shadow_case "wrapped device (heap vtable), validate" "[monitor]\nlevel=1\n[state_filter]\nenabled=1\nfilter=1\nvalidate=1\n" shadow "first Present observed"
+# The wrapper re-copies the vtable on Reset (drops SAPE's hooks): the watchdog
+# must notice and re-hook, and the monitor must keep producing summaries.
+shadow_case "vtable re-copied on Reset, filter on" "[monitor]\nlevel=2\nsummary_interval_ms=1000\n[state_filter]\nenabled=1\nfilter=1\n" reshadow "watchdog: device vtable changed"
 
 proxy_case "d3d9.dll proxy, filter on" "[monitor]\nlevel=2\n[state_filter]\nenabled=1\nfilter=1\n[resources]\ntrack=1\n"
 proxy_case "d3d9.dll proxy, validate" "[monitor]\nlevel=1\n[state_filter]\nenabled=1\nfilter=1\nvalidate=1\n"

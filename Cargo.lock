@@ -4,18 +4,18 @@ version = 3
 
 [[package]]
 name = "sape"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "sape-core",
 ]
 
 [[package]]
 name = "sape-analyze"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "sape-core",
 ]
 
 [[package]]
 name = "sape-core"
-version = "0.1.1"
+version = "0.1.2"

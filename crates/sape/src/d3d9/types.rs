@@ -24,6 +24,7 @@ pub mod d3d9_vt {
 // --- IDirect3DDevice9 -------------------------------------------------------
 pub mod dev_vt {
     pub const GET_AVAILABLE_TEXTURE_MEM: usize = 4;
+    pub const GET_SWAP_CHAIN: usize = 14;
     pub const RESET: usize = 16;
     pub const PRESENT: usize = 17;
     pub const CREATE_TEXTURE: usize = 23;
@@ -50,6 +51,14 @@ pub mod dev_vt {
     pub const SET_PIXEL_SHADER: usize = 107;
     /// Total number of methods in IDirect3DDevice9 (last is CreateQuery = 118).
     pub const COUNT: usize = 119;
+}
+
+// --- IDirect3DSwapChain9 ----------------------------------------------------
+pub mod sc_vt {
+    /// QueryInterface, AddRef, Release, Present, GetFrontBufferData, GetBackBuffer,
+    /// GetRasterStatus, GetDisplayMode, GetDevice, GetPresentParameters.
+    pub const PRESENT: usize = 3;
+    pub const COUNT: usize = 10;
 }
 
 // --- IDirect3DStateBlock9 ---------------------------------------------------
@@ -233,6 +242,16 @@ pub type SetStreamSourceFn = unsafe extern "system" fn(
     vb: *mut c_void,
     offset: u32,
     stride: u32,
+) -> HRESULT;
+pub type GetSwapChainFn =
+    unsafe extern "system" fn(this: *mut Device, index: u32, out: *mut *mut c_void) -> HRESULT;
+pub type SwapChainPresentFn = unsafe extern "system" fn(
+    this: *mut c_void,
+    src: *const c_void,
+    dst: *const c_void,
+    wnd: *mut c_void,
+    dirty: *const c_void,
+    flags: u32,
 ) -> HRESULT;
 pub type StateBlockApplyFn = unsafe extern "system" fn(this: *mut c_void) -> HRESULT;
 pub type ReleaseFn = unsafe extern "system" fn(this: *mut c_void) -> u32;

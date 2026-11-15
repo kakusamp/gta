@@ -38,15 +38,33 @@ struct V { float x, y, z, rhw; DWORD c; };
  * GTA SA modpack). */
 typedef HRESULT (WINAPI *CreateDeviceFn)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *, IDirect3DDevice9 **);
 static CreateDeviceFn real_create_device;
+/* "reshadow": additionally, on every Reset the wrapper throws its vtable copy
+ * away and makes a fresh copy of the ORIGINAL vtable - which silently drops
+ * every hook SAPE had installed in the previous copy. */
+static int reshadow = 0;
+typedef HRESULT (WINAPI *ResetFn)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
+static void **original_vtbl;
+static ResetFn real_reset;
+static HRESULT WINAPI shadow_reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp);
+static void make_shadow(IDirect3DDevice9 *dev) {
+    void **copy = HeapAlloc(GetProcessHeap(), 0, 119 * sizeof(void *));
+    memcpy(copy, original_vtbl, 119 * sizeof(void *));
+    if (reshadow) copy[16] = (void *)shadow_reset;
+    *(void ***)dev = copy;
+    printf("shadow: device vtable is now heap copy %p\n", (void *)copy);
+}
+static HRESULT WINAPI shadow_reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp) {
+    HRESULT hr = real_reset(dev, pp);
+    make_shadow(dev); /* fresh copy: SAPE's hooks are gone */
+    return hr;
+}
 static HRESULT WINAPI shadow_create_device(IDirect3D9 *self, UINT a, D3DDEVTYPE t, HWND w, DWORD f,
                                            D3DPRESENT_PARAMETERS *pp, IDirect3DDevice9 **out) {
     HRESULT hr = real_create_device(self, a, t, w, f, pp, out);
     if (SUCCEEDED(hr)) {
-        void **vt = *(void ***)*out;
-        void **copy = HeapAlloc(GetProcessHeap(), 0, 119 * sizeof(void *));
-        memcpy(copy, vt, 119 * sizeof(void *));
-        *(void ***)*out = copy;
-        printf("shadow: device vtable moved from %p to heap %p\n", (void *)vt, (void *)copy);
+        original_vtbl = *(void ***)*out;
+        real_reset = (ResetFn)original_vtbl[16];
+        make_shadow(*out);
     }
     return hr;
 }
@@ -67,7 +85,10 @@ int main(int argc, char **argv) {
     int frames = argc > 2 ? atoi(argv[2]) : 300;
 
     int bench = argc > 3 && strcmp(argv[3], "bench") == 0;
-    if (argc > 4 && strcmp(argv[4], "shadow") == 0) install_shadow_wrapper();
+    if (argc > 4 && (strcmp(argv[4], "shadow") == 0 || strcmp(argv[4], "reshadow") == 0)) {
+        reshadow = strcmp(argv[4], "reshadow") == 0;
+        install_shadow_wrapper();
+    }
     if (strcmp(dll, "none") != 0) {
         HMODULE m = LoadLibraryA(dll);
         printf("LoadLibrary(%s) = %p\n", dll, (void *)m);
@@ -188,9 +209,28 @@ int main(int argc, char **argv) {
     IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE); /* must NOT be skipped */
     CHECK(rs(dev, D3DRS_CULLMODE) == D3DCULL_NONE, "SetRenderState after Reset reached the device");
 
-    for (int f = 0; f < 30; f++) {
+    /* After a re-copy, SAPE's watchdog must re-install its hooks within ~1 s.
+     * Keep rendering for 3 s, then re-run the state-block check through the
+     * re-hooked table. */
+    DWORD until = GetTickCount() + (reshadow ? 3000 : 0);
+    int post = 0;
+    do {
         IDirect3DDevice9_Clear(dev, 0, NULL, D3DCLEAR_TARGET, 0xff202020, 1.0f, 0);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE);
         IDirect3DDevice9_Present(dev, NULL, NULL, NULL, NULL);
+        Sleep(5);
+    } while (++post < 30 || GetTickCount() < until);
+    if (reshadow) {
+        IDirect3DStateBlock9 *sb3 = NULL;
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+        IDirect3DDevice9_BeginStateBlock(dev);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
+        IDirect3DDevice9_EndStateBlock(dev, &sb3);
+        IDirect3DStateBlock9_Apply(sb3);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, FALSE);
+        CHECK(rs(dev, D3DRS_ALPHABLENDENABLE) == FALSE, "after vtable re-copy: SetRenderState after Apply reached the device");
+        IDirect3DStateBlock9_Release(sb3);
     }
 
     IDirect3DDevice9_Release(dev);
